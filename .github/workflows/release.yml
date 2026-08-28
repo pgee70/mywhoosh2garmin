@@ -3,6 +3,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,16 +17,20 @@ jobs:
             goos: linux
             goarch: amd64
             cc: gcc
+            build_output: mywhoosh2garmin-linux-amd64
             artifact: mywhoosh2garmin-linux-amd64
           - os: ubuntu-latest
             goos: windows
             goarch: amd64
             cc: x86_64-w64-mingw32-gcc
+            build_output: mywhoosh2garmin-windows-amd64.exe
             artifact: mywhoosh2garmin-windows-amd64.exe
           - os: macos-latest
             goos: darwin
             goarch: arm64
-            artifact: mywhoosh2garmin-darwin-arm64
+            cc: clang
+            build_output: mywhoosh2garmin
+            artifact: MyWhoosh2Garmin-macos-arm64.app.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -57,9 +62,60 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             LDFLAGS="$LDFLAGS -H=windowsgui"
           fi
-          go build -ldflags "$LDFLAGS" -o "${{ matrix.artifact }}" .
+          go build -ldflags "$LDFLAGS" -o "${{ matrix.build_output }}" .
 
-      - name: Upload artifact
+      - name: Package macOS app bundle
+        if: matrix.goos == 'darwin'
+        run: |
+          APP_NAME="MyWhoosh2Garmin.app"
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          VERSION="${VERSION#v}"
+
+          mkdir -p "$APP_NAME/Contents/MacOS"
+          cat > "$APP_NAME/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>MyWhoosh2Garmin</string>
+            <key>CFBundleDisplayName</key>
+            <string>MyWhoosh2Garmin</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.pgee70.mywhoosh2garmin</string>
+            <key>CFBundleVersion</key>
+            <string>${GITHUB_RUN_NUMBER}</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleExecutable</key>
+            <string>mywhoosh2garmin</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>12.0</string>
+          </dict>
+          </plist>
+          EOF
+
+          cp "${{ matrix.build_output }}" "$APP_NAME/Contents/MacOS/mywhoosh2garmin"
+          chmod +x "$APP_NAME/Contents/MacOS/mywhoosh2garmin"
+
+      - name: Package unsigned macOS app
+        if: matrix.goos == 'darwin'
+        run: |
+          APP_NAME="MyWhoosh2Garmin.app"
+          APP_ZIP="${{ matrix.artifact }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$APP_ZIP"
+
+      - name: Upload Linux/Windows artifact
+        if: matrix.goos != 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.build_output }}
+
+      - name: Upload macOS app artifact
+        if: matrix.goos == 'darwin'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -82,4 +138,4 @@ jobs:
           files: |
             artifacts/mywhoosh2garmin-linux-amd64/mywhoosh2garmin-linux-amd64
             artifacts/mywhoosh2garmin-windows-amd64.exe/mywhoosh2garmin-windows-amd64.exe
-            artifacts/mywhoosh2garmin-darwin-arm64/mywhoosh2garmin-darwin-arm64
+            artifacts/MyWhoosh2Garmin-macos-arm64.app.zip/MyWhoosh2Garmin-macos-arm64.app.zip
