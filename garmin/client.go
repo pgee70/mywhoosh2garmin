@@ -80,6 +80,24 @@ func (c *Client) Login(email, password string) error {
 	return nil
 }
 
+// LoginWithMFA performs a fresh SSO login and prompts for MFA code when required.
+func (c *Client) LoginWithMFA(email, password string, codeProvider func(message string) (string, error)) error {
+	oauth1, oauth2, err := LoginWithMFAProvider(email, password, c.Domain, codeProvider)
+	if err != nil {
+		return err
+	}
+
+	c.OAuth1 = oauth1
+	c.OAuth2 = oauth2
+
+	if c.TokenDir != "" {
+		if err := SaveTokens(c.TokenDir, oauth1, oauth2); err != nil {
+			fmt.Printf("  warning: could not cache tokens: %v\n", err)
+		}
+	}
+	return nil
+}
+
 // UploadFIT uploads a FIT file to Garmin Connect.
 // Automatically refreshes the OAuth2 token if expired.
 func (c *Client) UploadFIT(filePath string) error {
@@ -189,7 +207,7 @@ func parseUploadResult(status int, body []byte) error {
 	// Check for failures in the detailed result
 	var result struct {
 		DetailedImportResult struct {
-			Failures []interface{} `json:"failures"`
+			Failures  []interface{} `json:"failures"`
 			Successes []interface{} `json:"successes"`
 		} `json:"detailedImportResult"`
 	}

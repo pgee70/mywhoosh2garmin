@@ -17,7 +17,11 @@ echo "=== Building Windows amd64 ==="
 CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc \
   go build -ldflags "-s -w -H=windowsgui" -o "$DIST/mywhoosh2garmin-windows-amd64.exe" .
 
+echo "=== Building macOS arm64 ==="
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+  go build -ldflags "$LDFLAGS" -o "$DIST/mywhoosh2garmin-darwin-arm64" .
+
 echo ""
 ls -lh "$DIST"/
 echo ""
-echo "Done ✓"
+echo "Done"

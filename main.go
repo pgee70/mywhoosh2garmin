@@ -11,7 +11,9 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -27,6 +29,7 @@ import (
 type appConfig struct {
 	MyWhooshEmail string `json:"mywhoosh_email"`
 	GarminEmail   string `json:"garmin_email"`
+	GarminMFA     string `json:"garmin_mfa"`
 }
 
 func appConfigDir() string {
@@ -106,25 +109,54 @@ func main() {
 	var garminClient *garmin.Client
 
 	// --- Log panel ---
-	logEntry := widget.NewMultiLineEntry()
-	logEntry.Wrapping = fyne.TextWrapWord
-	logEntry.Disable()
-	logScroll := container.NewVScroll(logEntry)
+	logTextView := canvas.NewText("", theme.Color(theme.ColorNameForeground))
+	logTextView.Alignment = fyne.TextAlignLeading
+	logTextView.TextStyle = fyne.TextStyle{Monospace: true}
+	logTextView.TextSize = theme.TextSize()
+	logTextView.Text = " "
+	logScroll := container.NewVScroll(logTextView)
 	logScroll.SetMinSize(fyne.NewSize(0, 140))
 
 	var logMu sync.Mutex
 	var logText string
 
+	normalizeLogMessage := func(msg string) string {
+		replacer := strings.NewReplacer(
+			"✓", "[OK]",
+			"✅", "[OK]",
+			"❌", "[ERROR]",
+			"⚠", "[WARN]",
+			"⬇", "[DOWNLOAD]",
+			"⬆", "[UPLOAD]",
+			"🔧", "[FIX]",
+			"📧", "[EMAIL]",
+			"⏳", "[WAIT]",
+			"…", "...",
+			"—", "-",
+		)
+		return replacer.Replace(msg)
+	}
+
 	appendLog := func(msg string) {
 		logMu.Lock()
-		logText += msg + "\n"
+		logText += normalizeLogMessage(msg) + "\n"
 		text := logText
 		logMu.Unlock()
 		fyne.Do(func() {
-			logEntry.Enable()
-			logEntry.SetText(text)
-			logEntry.CursorRow = len(strings.Split(text, "\n"))
-			logEntry.Disable()
+			lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+			objects := make([]fyne.CanvasObject, 0, len(lines))
+			for _, line := range lines {
+				lineText := canvas.NewText(line, theme.Color(theme.ColorNameForeground))
+				lineText.Alignment = fyne.TextAlignLeading
+				lineText.TextStyle = fyne.TextStyle{Monospace: true}
+				lineText.TextSize = theme.TextSize()
+				objects = append(objects, lineText)
+			}
+			if len(objects) == 0 {
+				objects = append(objects, canvas.NewText("", theme.Color(theme.ColorNameForeground)))
+			}
+			logScroll.Content = container.NewVBox(objects...)
+			logScroll.Refresh()
 			logScroll.ScrollToBottom()
 		})
 	}
@@ -159,13 +191,57 @@ func main() {
 	garminPasswordEntry := widget.NewPasswordEntry()
 	garminPasswordEntry.SetPlaceHolder("Garmin password (only needed first time)")
 
+	garminMFAEntry := widget.NewEntry()
+	garminMFAEntry.SetPlaceHolder("Garmin 6-digit MFA code from email")
+	garminMFAEntry.Validator = func(value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		if len(value) != 6 {
+			return fmt.Errorf("enter 6 digits")
+		}
+		for _, r := range value {
+			if r < '0' || r > '9' {
+				return fmt.Errorf("enter digits only")
+			}
+		}
+		return nil
+	}
+	if cfg.GarminMFA != "" {
+		garminMFAEntry.SetText(cfg.GarminMFA)
+	}
+
 	// --- Activity list container ---
 	activityListBox := container.NewVBox()
 	activityScroll := container.NewVScroll(activityListBox)
 	activityScroll.SetMinSize(fyne.NewSize(0, 280))
 
-	mwStatusLabel := widget.NewLabel("")
-	garminStatusLabel := widget.NewLabel("")
+	mwStatusLabel := widget.NewRichText()
+	garminStatusLabel := widget.NewRichText()
+	var checkingGarmin bool
+
+	setStatus := func(label *widget.RichText, message string, importance widget.Importance) {
+		colorName := theme.ColorNameForeground
+		switch importance {
+		case widget.SuccessImportance:
+			colorName = theme.ColorNameSuccess
+		case widget.WarningImportance:
+			colorName = theme.ColorNameWarning
+		case widget.DangerImportance:
+			colorName = theme.ColorNameError
+		}
+		label.Wrapping = fyne.TextWrapWord
+		label.Segments = []widget.RichTextSegment{
+			&widget.TextSegment{
+				Text: message,
+				Style: widget.RichTextStyle{
+					ColorName: colorName,
+				},
+			},
+		}
+		label.Refresh()
+	}
 
 	// --- Helper: authenticate to Garmin ---
 	ensureGarmin := func() (*garmin.Client, error) {
@@ -187,12 +263,67 @@ func main() {
 			return nil, fmt.Errorf("enter Garmin email & password for first login")
 		}
 
-		if err := client.Login(email, password); err != nil {
+		if err := client.LoginWithMFA(email, password, func(message string) (string, error) {
+			code := strings.TrimSpace(garminMFAEntry.Text)
+			if code == "" {
+				fyne.Do(func() {
+					setStatus(garminStatusLabel, "📧 Garmin MFA email sent — enter the 6-digit code, then press Check Garmin Login again", widget.WarningImportance)
+					dialog.ShowInformation("Garmin MFA Required", message, w)
+				})
+				return "", fmt.Errorf("Garmin MFA code is required")
+			}
+			cfg.GarminMFA = code
+			saveAppConfig(cfg)
+			return code, nil
+		}); err != nil {
 			return nil, fmt.Errorf("Garmin login failed: %w", err)
 		}
 
 		garminClient = client
 		return client, nil
+	}
+
+	checkGarminLogin := func() {
+		if checkingGarmin {
+			return
+		}
+		checkingGarmin = true
+		go func() {
+			defer func() {
+				checkingGarmin = false
+			}()
+
+			cfg.GarminEmail = garminEmailEntry.Text
+			cfg.GarminMFA = strings.TrimSpace(garminMFAEntry.Text)
+			saveAppConfig(cfg)
+
+			client, err := ensureGarmin()
+			if err != nil {
+				appendLog("❌ " + err.Error())
+				fyne.Do(func() {
+					if strings.Contains(err.Error(), "Garmin MFA code is required") {
+						return
+					}
+					setStatus(garminStatusLabel, "❌ Garmin not connected", widget.DangerImportance)
+				})
+				return
+			}
+			garminClient = client
+			appendLog("✓ Garmin login successful")
+			fyne.Do(func() {
+				setStatus(garminStatusLabel, "✅ Garmin connected", widget.SuccessImportance)
+			})
+		}()
+	}
+
+	submitGarminMFACode := func() {
+		if err := garminMFAEntry.Validate(); err != nil {
+			fyne.Do(func() {
+				setStatus(garminStatusLabel, "⚠ Enter the 6-digit Garmin MFA code", widget.WarningImportance)
+			})
+			return
+		}
+		checkGarminLogin()
 	}
 
 	// --- Helper: process and upload a single activity ---
@@ -256,7 +387,7 @@ func main() {
 				return
 			}
 			fyne.Do(func() {
-				garminStatusLabel.SetText("✓ Garmin connected")
+				setStatus(garminStatusLabel, "✅ Garmin connected", widget.SuccessImportance)
 			})
 
 			// 5. Upload to Garmin
@@ -343,6 +474,7 @@ func main() {
 			// Persist config
 			cfg.MyWhooshEmail = mwEmailEntry.Text
 			cfg.GarminEmail = garminEmailEntry.Text
+			cfg.GarminMFA = strings.TrimSpace(garminMFAEntry.Text)
 			saveAppConfig(cfg)
 
 			// 1. Login to MyWhoosh (try cached session first)
@@ -364,7 +496,7 @@ func main() {
 				appendLog("✓ Logged in to MyWhoosh")
 			}
 			fyne.Do(func() {
-				mwStatusLabel.SetText("✓ MyWhoosh connected")
+				setStatus(mwStatusLabel, "✅ MyWhoosh connected", widget.SuccessImportance)
 			})
 
 			// 2. Fetch activities from last 10 days
@@ -549,14 +681,28 @@ func main() {
 		mwStatusLabel,
 	)
 
+	enterCodeBtn := widget.NewButton("Enter Code", submitGarminMFACode)
+	garminMFARow := container.New(
+		layout.NewGridWrapLayout(fyne.NewSize(340, garminMFAEntry.MinSize().Height)),
+		container.NewBorder(
+			nil,
+			nil,
+			nil,
+			container.NewGridWrap(fyne.NewSize(110, enterCodeBtn.MinSize().Height), enterCodeBtn),
+			garminMFAEntry,
+		),
+	)
+
 	garminSection := container.NewVBox(
 		widget.NewLabel("Garmin Connect"),
 		garminEmailEntry,
 		garminPasswordEntry,
+		widget.NewButton("Check Garmin Login", checkGarminLogin),
+		garminMFARow,
 		garminStatusLabel,
 	)
 
-	credentialsRow := container.New(layout.NewGridWrapLayout(fyne.NewSize(340, 160)),
+	credentialsRow := container.New(layout.NewGridWrapLayout(fyne.NewSize(340, 230)),
 		mywhooshSection, garminSection,
 	)
 
@@ -569,6 +715,7 @@ func main() {
 		title,
 		widget.NewSeparator(),
 		credentialsRow,
+		widget.NewSeparator(),
 		widget.NewSeparator(),
 		fetchBtn,
 		widget.NewSeparator(),

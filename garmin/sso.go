@@ -101,8 +101,32 @@ func (s *ssoSession) post(reqURL string, form url.Values, useReferer bool) (stri
 	return string(body), nil
 }
 
+// MFAChallenge describes a pending Garmin MFA email confirmation challenge.
+type MFAChallenge struct {
+	Message  string
+	CodeSent bool
+}
+
+type mfaCodeProvider func(challenge MFAChallenge) (string, error)
+
 // Login performs the full Garmin SSO login flow and returns OAuth tokens.
 func Login(email, password, domain string) (*OAuth1Token, *OAuth2Token, error) {
+	return loginWithMFA(email, password, domain, nil)
+}
+
+// LoginWithMFAProvider performs Garmin SSO login and requests a confirmation code
+// from provider when Garmin prompts for MFA.
+func LoginWithMFAProvider(email, password, domain string, provider func(message string) (string, error)) (*OAuth1Token, *OAuth2Token, error) {
+	var wrapped mfaCodeProvider
+	if provider != nil {
+		wrapped = func(challenge MFAChallenge) (string, error) {
+			return provider(challenge.Message)
+		}
+	}
+	return loginWithMFA(email, password, domain, wrapped)
+}
+
+func loginWithMFA(email, password, domain string, mfaProvider mfaCodeProvider) (*OAuth1Token, *OAuth2Token, error) {
 	if domain == "" {
 		domain = "garmin.com"
 	}
@@ -177,9 +201,18 @@ func Login(email, password, domain string) (*OAuth1Token, *OAuth2Token, error) {
 
 	title := titleMatch[1]
 	if strings.Contains(title, "MFA") {
-		return nil, nil, fmt.Errorf(
-			"MFA is required but not yet supported in this tool.\n" +
-				"  Disable MFA temporarily, or use the Python version")
+		if mfaProvider == nil {
+			return nil, nil, fmt.Errorf("MFA is required but no MFA code provider is configured")
+		}
+		body, err = completeMFA(sess, ssoBase, signinParams, mfaProvider)
+		if err != nil {
+			return nil, nil, err
+		}
+		titleMatch = titleRe.FindStringSubmatch(body)
+		if titleMatch == nil {
+			return nil, nil, fmt.Errorf("no title after MFA confirmation")
+		}
+		title = titleMatch[1]
 	}
 	if title != "Success" {
 		return nil, nil, fmt.Errorf("login failed: %q (check credentials)", title)
@@ -205,6 +238,37 @@ func Login(email, password, domain string) (*OAuth1Token, *OAuth2Token, error) {
 	}
 
 	return oauth1Token, oauth2Token, nil
+}
+
+func completeMFA(sess *ssoSession, ssoBase string, signinParams url.Values, provider mfaCodeProvider) (string, error) {
+	code, err := provider(MFAChallenge{
+		Message:  "Garmin sent a 6-digit code to your email. Enter it, then press Check Garmin Login again.",
+		CodeSent: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("MFA code entry cancelled: %w", err)
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "", fmt.Errorf("MFA code is empty")
+	}
+
+	formData := url.Values{
+		"mfa-code":   {code},
+		"embed":      {"true"},
+		"fromPage":   {"setupEnterMFA"},
+		"rememberMe": {"on"},
+	}
+
+	mfaBody, err := sess.post(
+		ssoBase+"/sso/verifyMFA/loginEnterMfaCode?"+signinParams.Encode(),
+		formData,
+		true,
+	)
+	if err != nil {
+		return "", fmt.Errorf("MFA submit failed: %w", err)
+	}
+	return mfaBody, nil
 }
 
 // ExchangeForOAuth2 refreshes the OAuth2 token using an existing OAuth1 token.
