@@ -67,48 +67,52 @@ jobs:
           GOARCH: arm64
           CC: clang
         run: go build -ldflags "-s -w" -o mywhoosh2garmin .
-      - name: Create .app bundle and zip with ditto
+      - name: Create .app bundle and DMG
         run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
           VERSION="${VERSION#v}"
           APP="MyWhoosh2Garmin.app"
           mkdir -p "$APP/Contents/MacOS"
           cat > "$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleName</key><string>MyWhoosh2Garmin</string>
-            <key>CFBundleDisplayName</key><string>MyWhoosh2Garmin</string>
-            <key>CFBundleIdentifier</key><string>com.pgee70.mywhoosh2garmin</string>
-            <key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER}</string>
-            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>CFBundleExecutable</key><string>mywhoosh2garmin</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>LSMinimumSystemVersion</key><string>12.0</string>
-          </dict>
-          </plist>
-          PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>MyWhoosh2Garmin</string>
+  <key>CFBundleDisplayName</key><string>MyWhoosh2Garmin</string>
+  <key>CFBundleIdentifier</key><string>com.pgee70.mywhoosh2garmin</string>
+  <key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER}</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleExecutable</key><string>mywhoosh2garmin</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+</dict>
+</plist>
+PLIST
           cp mywhoosh2garmin "$APP/Contents/MacOS/mywhoosh2garmin"
           chmod +x "$APP/Contents/MacOS/mywhoosh2garmin"
-          # ditto preserves macOS metadata and produces a valid zip for Archive Utility
-          ditto -c -k --sequesterRsrc --keepParent "$APP" MyWhoosh2Garmin-macos-arm64.app.zip
+          # Create a DMG — hdiutil produces a single file that macOS opens natively
+          mkdir dmg_staging
+          cp -R "$APP" dmg_staging/
+          hdiutil create \
+            -volname "MyWhoosh2Garmin" \
+            -srcfolder dmg_staging \
+            -ov -format UDZO \
+            MyWhoosh2Garmin-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
-          name: MyWhoosh2Garmin-macos-arm64.app.zip
-          path: MyWhoosh2Garmin-macos-arm64.app.zip
+          name: MyWhoosh2Garmin-macos-arm64.dmg
+          path: MyWhoosh2Garmin-macos-arm64.dmg
 
   release:
     needs: [build-linux, build-windows, build-macos]
-    # Run on macOS so ditto-zipped artifact is not re-processed by a Linux unzipper
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: false
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -117,4 +121,4 @@ jobs:
           files: |
             artifacts/mywhoosh2garmin-linux-amd64/mywhoosh2garmin-linux-amd64
             artifacts/mywhoosh2garmin-windows-amd64.exe/mywhoosh2garmin-windows-amd64.exe
-            artifacts/MyWhoosh2Garmin-macos-arm64.app.zip/MyWhoosh2Garmin-macos-arm64.app.zip
+            artifacts/MyWhoosh2Garmin-macos-arm64.dmg/MyWhoosh2Garmin-macos-arm64.dmg

@@ -31,7 +31,7 @@ Grab the latest release for your platform from the [**Releases**](../../releases
 |---|---|
 | Windows | `mywhoosh2garmin-windows-amd64.exe` |
 | Linux | `mywhoosh2garmin-linux-amd64` |
-| macOS (Apple Silicon) | `mywhoosh2garmin-darwin-arm64` |
+| macOS (Apple Silicon) | `MyWhoosh2Garmin-macos-arm64.dmg` |
 
 No installation needed — just download and run.
 
