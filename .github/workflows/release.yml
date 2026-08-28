@@ -9,127 +9,107 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            cc: gcc
-            build_output: mywhoosh2garmin-linux-amd64
-            artifact: mywhoosh2garmin-linux-amd64
-          - os: ubuntu-latest
-            goos: windows
-            goarch: amd64
-            cc: x86_64-w64-mingw32-gcc
-            build_output: mywhoosh2garmin-windows-amd64.exe
-            artifact: mywhoosh2garmin-windows-amd64.exe
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-            cc: clang
-            build_output: mywhoosh2garmin
-            artifact: MyWhoosh2Garmin-macos-arm64.app.zip
-
-    runs-on: ${{ matrix.os }}
-
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-
-      - name: Install Linux build deps
-        if: matrix.goos == 'linux'
+      - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc libgl-dev xorg-dev libxxf86vm-dev
-
-      - name: Install mingw-w64 (for Windows cross-compile)
-        if: matrix.goos == 'windows'
-        run: sudo apt-get install -y mingw-w64
-
-      - name: Build
+      - name: Build Linux
         env:
           CGO_ENABLED: 1
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CC: ${{ matrix.cc }}
-        run: |
-          LDFLAGS="-s -w"
-          if [ "$GOOS" = "windows" ]; then
-            LDFLAGS="$LDFLAGS -H=windowsgui"
-          fi
-          go build -ldflags "$LDFLAGS" -o "${{ matrix.build_output }}" .
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -ldflags "-s -w" -o mywhoosh2garmin-linux-amd64 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mywhoosh2garmin-linux-amd64
+          path: mywhoosh2garmin-linux-amd64
 
-      - name: Package macOS app bundle
-        if: matrix.goos == 'darwin'
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Install build deps
         run: |
-          APP_NAME="MyWhoosh2Garmin.app"
+          sudo apt-get update
+          sudo apt-get install -y gcc libgl-dev xorg-dev libxxf86vm-dev mingw-w64
+      - name: Build Windows
+        env:
+          CGO_ENABLED: 1
+          GOOS: windows
+          GOARCH: amd64
+          CC: x86_64-w64-mingw32-gcc
+        run: go build -ldflags "-s -w -H=windowsgui" -o mywhoosh2garmin-windows-amd64.exe .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mywhoosh2garmin-windows-amd64.exe
+          path: mywhoosh2garmin-windows-amd64.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build macOS arm64
+        env:
+          CGO_ENABLED: 1
+          GOOS: darwin
+          GOARCH: arm64
+          CC: clang
+        run: go build -ldflags "-s -w" -o mywhoosh2garmin .
+      - name: Create .app bundle and zip with ditto
+        run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
           VERSION="${VERSION#v}"
-
-          mkdir -p "$APP_NAME/Contents/MacOS"
-          cat > "$APP_NAME/Contents/Info.plist" <<EOF
+          APP="MyWhoosh2Garmin.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>CFBundleName</key>
-            <string>MyWhoosh2Garmin</string>
-            <key>CFBundleDisplayName</key>
-            <string>MyWhoosh2Garmin</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.pgee70.mywhoosh2garmin</string>
-            <key>CFBundleVersion</key>
-            <string>${GITHUB_RUN_NUMBER}</string>
-            <key>CFBundleShortVersionString</key>
-            <string>${VERSION}</string>
-            <key>CFBundleExecutable</key>
-            <string>mywhoosh2garmin</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>LSMinimumSystemVersion</key>
-            <string>12.0</string>
+            <key>CFBundleName</key><string>MyWhoosh2Garmin</string>
+            <key>CFBundleDisplayName</key><string>MyWhoosh2Garmin</string>
+            <key>CFBundleIdentifier</key><string>com.pgee70.mywhoosh2garmin</string>
+            <key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleExecutable</key><string>mywhoosh2garmin</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>12.0</string>
           </dict>
           </plist>
-          EOF
-
-          cp "${{ matrix.build_output }}" "$APP_NAME/Contents/MacOS/mywhoosh2garmin"
-          chmod +x "$APP_NAME/Contents/MacOS/mywhoosh2garmin"
-
-      - name: Package unsigned macOS app
-        if: matrix.goos == 'darwin'
-        run: |
-          APP_NAME="MyWhoosh2Garmin.app"
-          APP_ZIP="${{ matrix.artifact }}"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$APP_ZIP"
-
-      - name: Upload Linux/Windows artifact
-        if: matrix.goos != 'darwin'
-        uses: actions/upload-artifact@v4
+          PLIST
+          cp mywhoosh2garmin "$APP/Contents/MacOS/mywhoosh2garmin"
+          chmod +x "$APP/Contents/MacOS/mywhoosh2garmin"
+          # ditto preserves macOS metadata and produces a valid zip for Archive Utility
+          ditto -c -k --sequesterRsrc --keepParent "$APP" MyWhoosh2Garmin-macos-arm64.app.zip
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.build_output }}
-
-      - name: Upload macOS app artifact
-        if: matrix.goos == 'darwin'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: MyWhoosh2Garmin-macos-arm64.app.zip
+          path: MyWhoosh2Garmin-macos-arm64.app.zip
 
   release:
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows, build-macos]
+    # Run on macOS so ditto-zipped artifact is not re-processed by a Linux unzipper
+    runs-on: macos-latest
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: false
 
       - name: Create release
         uses: softprops/action-gh-release@v2
