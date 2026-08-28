@@ -94,6 +94,8 @@ jobs:
             > "$APP/Contents/Info.plist"
           cp mywhoosh2garmin "$APP/Contents/MacOS/mywhoosh2garmin"
           chmod +x "$APP/Contents/MacOS/mywhoosh2garmin"
+          # Ad-hoc sign the app so Gatekeeper accepts it on first launch
+          codesign --force --deep --sign - "$APP"
           mkdir dmg_staging
           cp -R "$APP" dmg_staging/
           hdiutil create \
