@@ -45,7 +45,14 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc libgl-dev xorg-dev libxxf86vm-dev mingw-w64
+          sudo apt-get install -y gcc libgl-dev xorg-dev libxxf86vm-dev mingw-w64 imagemagick
+      - name: Embed Windows icon via syso
+        run: |
+          # Generate a .syso resource file so the exe gets the icon embedded
+          cat > icon.rc << 'RC'
+          IDI_ICON1 ICON "images/icon.ico"
+          RC
+          x86_64-w64-mingw32-windres icon.rc -O coff -o icon_windows_amd64.syso
       - name: Build Windows
         env:
           CGO_ENABLED: 1
@@ -88,10 +95,13 @@ jobs:
             "  <key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER}</string>" \
             "  <key>CFBundleShortVersionString</key><string>${VERSION}</string>" \
             '  <key>CFBundleExecutable</key><string>mywhoosh2garmin</string>' \
+            '  <key>CFBundleIconFile</key><string>AppIcon</string>' \
             '  <key>CFBundlePackageType</key><string>APPL</string>' \
             '  <key>LSMinimumSystemVersion</key><string>12.0</string>' \
             '</dict></plist>' \
             > "$APP/Contents/Info.plist"
+          mkdir -p "$APP/Contents/Resources"
+          cp images/icon.icns "$APP/Contents/Resources/AppIcon.icns"
           cp mywhoosh2garmin "$APP/Contents/MacOS/mywhoosh2garmin"
           chmod +x "$APP/Contents/MacOS/mywhoosh2garmin"
           # Ad-hoc sign the app so Gatekeeper accepts it on first launch

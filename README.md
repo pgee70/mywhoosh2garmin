@@ -40,7 +40,7 @@ No installation needed — just download and run.
 Because the app is not notarized by Apple, macOS may show **"damaged and can't be opened"** the first time. To clear this, run once in Terminal:
 
 ```bash
-xattr -cr /Applications/MyWhoosh2Garmin.app
+xattr -cr /path-to/MyWhoosh2Garmin.app
 ```
 
 Or right-click the `.app` inside the DMG and choose **Open**, then click **Open** in the prompt.

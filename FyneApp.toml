@@ -1,0 +1,7 @@
+Website = "https://github.com/pgee70/mywhoosh2garmin"
+Name = "MyWhoosh2Garmin"
+ID = "com.pgee70.mywhoosh2garmin"
+Icon = "images/icon.png"
+
+[Release]
+  Category = "public.app-category.sports"

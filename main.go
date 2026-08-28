@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,6 +22,9 @@ import (
 	"mywhoosh2garmin/garmin"
 	"mywhoosh2garmin/mywhoosh"
 )
+
+//go:embed images/icon.png
+var appIconBytes []byte
 
 // ---------------------------------------------------------------------------
 // App config (persisted to ~/.mywhoosh2garmin/config.json)
@@ -96,7 +100,9 @@ func (st *syncedTracker) MarkSynced(activityID string) {
 
 func main() {
 	a := app.New()
+	a.SetIcon(fyne.NewStaticResource("icon.png", appIconBytes))
 	w := a.NewWindow("MyWhoosh2Garmin")
+	w.SetIcon(fyne.NewStaticResource("icon.png", appIconBytes))
 	w.Resize(fyne.NewSize(720, 700))
 
 	cfg := loadAppConfig()
