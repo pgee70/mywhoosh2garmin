@@ -4,6 +4,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to release (e.g. v1.2.3). Leave empty to build artifacts only.'
+        required: false
+        default: ''
 permissions:
   contents: write
 
@@ -73,25 +78,22 @@ jobs:
           VERSION="${VERSION#v}"
           APP="MyWhoosh2Garmin.app"
           mkdir -p "$APP/Contents/MacOS"
-          cat > "$APP/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>MyWhoosh2Garmin</string>
-  <key>CFBundleDisplayName</key><string>MyWhoosh2Garmin</string>
-  <key>CFBundleIdentifier</key><string>com.pgee70.mywhoosh2garmin</string>
-  <key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER}</string>
-  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleExecutable</key><string>mywhoosh2garmin</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
-</dict>
-</plist>
-PLIST
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0"><dict>' \
+            '  <key>CFBundleName</key><string>MyWhoosh2Garmin</string>' \
+            '  <key>CFBundleDisplayName</key><string>MyWhoosh2Garmin</string>' \
+            '  <key>CFBundleIdentifier</key><string>com.pgee70.mywhoosh2garmin</string>' \
+            "  <key>CFBundleVersion</key><string>${GITHUB_RUN_NUMBER}</string>" \
+            "  <key>CFBundleShortVersionString</key><string>${VERSION}</string>" \
+            '  <key>CFBundleExecutable</key><string>mywhoosh2garmin</string>' \
+            '  <key>CFBundlePackageType</key><string>APPL</string>' \
+            '  <key>LSMinimumSystemVersion</key><string>12.0</string>' \
+            '</dict></plist>' \
+            > "$APP/Contents/Info.plist"
           cp mywhoosh2garmin "$APP/Contents/MacOS/mywhoosh2garmin"
           chmod +x "$APP/Contents/MacOS/mywhoosh2garmin"
-          # Create a DMG — hdiutil produces a single file that macOS opens natively
           mkdir dmg_staging
           cp -R "$APP" dmg_staging/
           hdiutil create \
@@ -107,8 +109,8 @@ PLIST
   release:
     needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
-    # Only publish a GitHub Release when triggered by a version tag
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Run when triggered by a version tag push, or a manual dispatch with a tag provided
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
 
     steps:
       - name: Download all artifacts
@@ -119,6 +121,7 @@ PLIST
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
             artifacts/mywhoosh2garmin-linux-amd64/mywhoosh2garmin-linux-amd64
