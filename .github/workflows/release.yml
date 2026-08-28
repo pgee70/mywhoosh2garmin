@@ -3,6 +3,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,16 +17,20 @@ jobs:
             goos: linux
             goarch: amd64
             cc: gcc
+            build_output: mywhoosh2garmin-linux-amd64
             artifact: mywhoosh2garmin-linux-amd64
           - os: ubuntu-latest
             goos: windows
             goarch: amd64
             cc: x86_64-w64-mingw32-gcc
+            build_output: mywhoosh2garmin-windows-amd64.exe
             artifact: mywhoosh2garmin-windows-amd64.exe
           - os: macos-latest
             goos: darwin
             goarch: arm64
-            artifact: mywhoosh2garmin-darwin-arm64
+            cc: clang
+            build_output: mywhoosh2garmin
+            artifact: MyWhoosh2Garmin-macos-arm64.app.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -57,9 +62,118 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             LDFLAGS="$LDFLAGS -H=windowsgui"
           fi
-          go build -ldflags "$LDFLAGS" -o "${{ matrix.artifact }}" .
+          go build -ldflags "$LDFLAGS" -o "${{ matrix.build_output }}" .
 
-      - name: Upload artifact
+      - name: Package macOS app bundle
+        if: matrix.goos == 'darwin'
+        run: |
+          APP_NAME="MyWhoosh2Garmin.app"
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          VERSION="${VERSION#v}"
+
+          mkdir -p "$APP_NAME/Contents/MacOS"
+          cat > "$APP_NAME/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>MyWhoosh2Garmin</string>
+            <key>CFBundleDisplayName</key>
+            <string>MyWhoosh2Garmin</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.pgee70.mywhoosh2garmin</string>
+            <key>CFBundleVersion</key>
+            <string>${GITHUB_RUN_NUMBER}</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleExecutable</key>
+            <string>mywhoosh2garmin</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>12.0</string>
+          </dict>
+          </plist>
+          EOF
+
+          cp "${{ matrix.build_output }}" "$APP_NAME/Contents/MacOS/mywhoosh2garmin"
+          chmod +x "$APP_NAME/Contents/MacOS/mywhoosh2garmin"
+
+      - name: Check Apple signing/notarization secrets
+        if: matrix.goos == 'darwin'
+        id: apple_secrets
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [[ -n "$APPLE_CERT_BASE64" && -n "$APPLE_CERT_PASSWORD" && -n "$APPLE_TEAM_ID" && -n "$APPLE_ID" && -n "$APPLE_APP_PASSWORD" && -n "$APPLE_SIGNING_IDENTITY" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Apple signing/notarization secrets detected; will sign and notarize macOS app."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Apple signing/notarization secrets missing; packaging unsigned macOS app bundle."
+          fi
+
+      - name: Sign, notarize, staple, and package macOS app
+        if: matrix.goos == 'darwin' && steps.apple_secrets.outputs.enabled == 'true'
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_NAME="MyWhoosh2Garmin.app"
+          APP_ZIP="${{ matrix.artifact }}"
+          CERT_PATH="$RUNNER_TEMP/apple_cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          cleanup() {
+            security delete-keychain "$KEYCHAIN_PATH" || true
+            rm -f "$CERT_PATH"
+          }
+          trap cleanup EXIT
+
+          echo "$APPLE_CERT_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          codesign --deep --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$APP_NAME"
+          codesign --verify --deep --strict --verbose=2 "$APP_NAME"
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$APP_ZIP"
+          xcrun notarytool submit "$APP_ZIP" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$APP_NAME"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$APP_ZIP"
+
+      - name: Package unsigned macOS app
+        if: matrix.goos == 'darwin' && steps.apple_secrets.outputs.enabled != 'true'
+        run: |
+          APP_NAME="MyWhoosh2Garmin.app"
+          APP_ZIP="${{ matrix.artifact }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$APP_ZIP"
+
+      - name: Upload Linux/Windows artifact
+        if: matrix.goos != 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.build_output }}
+
+      - name: Upload macOS app artifact
+        if: matrix.goos == 'darwin'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -82,4 +196,4 @@ jobs:
           files: |
             artifacts/mywhoosh2garmin-linux-amd64/mywhoosh2garmin-linux-amd64
             artifacts/mywhoosh2garmin-windows-amd64.exe/mywhoosh2garmin-windows-amd64.exe
-            artifacts/mywhoosh2garmin-darwin-arm64/mywhoosh2garmin-darwin-arm64
+            artifacts/MyWhoosh2Garmin-macos-arm64.app.zip/MyWhoosh2Garmin-macos-arm64.app.zip
